@@ -1,7 +1,33 @@
 @import "tailwindcss";
 
-@layer base {
-  body {
-    @apply bg-slate-950 text-slate-300;
-  }
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-[#0b0f17] text-slate-300 antialiased;
+    color-scheme: dark;
+  }
+  ::selection { background: rgb(59 130 246 / 0.35); }
+  * { scrollbar-width: thin; scrollbar-color: #334155 transparent; }
+}
+
+.cad-text {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+@keyframes changed-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.animate-changed { animation: changed-pulse 0.9s ease-in-out 4; }
+
+@keyframes cloud-dash {
+  to { stroke-dashoffset: -24; }
+}
+.animate-cloud { stroke-dasharray: 8 4; animation: cloud-dash 1.2s linear infinite; }

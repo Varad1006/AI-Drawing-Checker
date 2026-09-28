@@ -1,8 +1,14 @@
 node_modules/
 venv/
+.venv/
 __pycache__/
+.pytest_cache/
+*.pyc
 .env
-data/uploads/*
-!data/uploads/.gitkeep
 dist/
 .vite/
+.DS_Store
+
+# runtime data (database + uploads) is created on first run
+data/
+.ruff_cache/

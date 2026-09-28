@@ -1,11 +1,27 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.orm import sessionmaker
+from __future__ import annotations
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///../data/drawings.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+from .config import DATA_DIR, DB_URL
+
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+engine = create_engine(DB_URL, connect_args={"check_same_thread": False} if DB_URL.startswith("sqlite") else {})
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_conn, _):
+    if DB_URL.startswith("sqlite"):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.close()
+
+
+class Base(DeclarativeBase):
+    pass
+
 
 def get_db():
     db = SessionLocal()
@@ -13,3 +29,8 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def init_db() -> None:
+    from . import models  # noqa: F401  (register tables)
+    Base.metadata.create_all(engine)
