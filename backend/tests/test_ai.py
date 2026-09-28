@@ -81,3 +81,59 @@ def test_api_uses_groq_when_enabled(fake_groq):
         groq_client._complete = boom  # restored by monkeypatch at teardown
         r = c.post(f"/api/drawings/{d['id']}/chat", json={"message": "hello"}).json()
         assert "rate limit" in r["chat"][-1]["content"] and r["drawing"]["head_rev"] == 2
+
+
+def test_rate_limit_mid_loop_keeps_completed_edits(fake_groq, faulty):
+    script, _ = fake_groq
+    script.append(reply(calls=[("set_tag", {"target": "E7", "tag": "P-102"})]))
+
+    def later(**_):
+        raise groq_client.AIError("Groq rate limit reached — wait a moment and try again.")
+
+    first = groq_client._complete
+
+    def complete(**kw):
+        return first(**kw) if script else later(**kw)
+
+    groq_client._complete = complete
+    result = groq_client.chat(faulty, [], "renumber the standby pump")
+    assert [op["op"] for op in result.workbench.ops] == ["set_tag"]
+    assert "rate limit" in result.reply and "Retagged" in result.reply and "remain" in result.reply
+
+
+def test_step_cap_summarises_instead_of_failing(fake_groq, faulty, monkeypatch):
+    script, _ = fake_groq
+    monkeypatch.setattr(groq_client, "MAX_STEPS", 2)
+    script += [reply(calls=[("set_title_block", {"field": "CHECKED_BY", "value": "A"})]),
+               reply(calls=[("run_checks", {})])]
+    result = groq_client.chat(faulty, [], "sign it")
+    assert result.reply.startswith("Here is what I changed:") and "CHECKED_BY" in result.reply
+
+
+def test_add_component_can_connect_in_one_call(faulty):
+    from app.ai.tools import Workbench
+    from app.core import topology
+    wb = Workbench(faulty)
+    res = wb.call("add_component", {"type": "instrument", "tag": "LIC-102", "near": "LV-102", "side": "above",
+                                    "connect_to": "LV-102", "connect_kind": "signal"})
+    assert res["ok"], res
+    lic = next(e for e in wb.doc["entities"] if e["tag"] == "LIC-102")
+    assert lic["type"] == "instrument_panel", "controller type follows the ISA tag"
+    lv = next(e for e in wb.doc["entities"] if e["tag"] == "LV-102")
+    assert lv["id"] in topology.build(wb.doc).neighbours(lic["id"])
+
+
+def test_review_places_pipe_findings_and_drops_unplaceable(fake_groq, faulty):
+    script, _ = fake_groq
+    script.append(reply(json.dumps({"findings": [
+        {"title": "Line service code changes mid-run", "severity": "LOW", "entities": [], "lines": ["L16"]},
+        {"title": "Vague concern", "severity": "LOW", "entities": [], "lines": []}]})))
+    findings = groq_client.review(faulty, [])
+    assert len(findings) == 1 and findings[0]["lines"] == ["L16"] and findings[0]["bbox"]
+
+
+def test_tools_warn_about_tag_convention(faulty):
+    from app.ai.tools import Workbench
+    wb = Workbench(faulty)
+    res = wb.call("insert_inline", {"type": "check_valve", "tag": "CV-102", "after": "E7"})
+    assert res["ok"] and "NRV" in res["warnings"][0]

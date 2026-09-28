@@ -87,3 +87,21 @@ def test_pdf_documents_skip_topology_rules(faulty):
 
 def test_rules_are_stable_for_regenerated_sample():
     assert [f["key"] for f in run_rules(water_treatment())] == [f["key"] for f in run_rules(water_treatment())]
+
+
+def test_loop_wiring_and_field_instrument_process_connection(clean):
+    lic = by_tag(clean, "LIC-102")[0]
+    lt = by_tag(clean, "LT-101")[0]
+    tk = by_tag(clean, "TK-101")[0]
+    # drop the LIC-102 -> LV-102 signal line and LT-101's nozzle line, then add a signal-only transmitter
+    doc = apply_ops(clean, [
+        {"op": "delete", "id": next(ln["id"] for ln in clean["lines"] if ln["kind"] == "signal" and ln["pts"][0][0] == 370)},
+        {"op": "delete", "id": next(ln["id"] for ln in clean["lines"] if ln["pts"][0] == [67.0, 183.0])},
+        {"op": "connect", "from": lt["id"], "to": lic["id"], "kind": "signal"},
+    ]).doc
+    found = {f["rule_id"]: f for f in run_rules(doc)}
+    assert found["R011"]["title"] == "LV-102 is not wired to its control loop"
+    assert found["R012"]["title"] == "LT-101 has no process connection"
+    assert found["R012"]["fix"]["ops"][0]["from"] == tk["id"]
+    fixed, *_ = autofix_doc(doc)
+    assert not {"R011", "R012"} & set(rule_ids(fixed))

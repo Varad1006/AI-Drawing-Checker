@@ -8,7 +8,7 @@ from __future__ import annotations
 from ..core import topology
 from ..core.document import describe
 from ..core.ops import OpError, apply_ops
-from ..core.symbols import TITLE_FIELDS, TYPES
+from ..core.symbols import TITLE_FIELDS, TYPES, tag_valid_for_type
 from ..rules.engine import run_rules
 
 COMPONENT_TYPES = list(TYPES)
@@ -30,7 +30,16 @@ class Workbench:
         self.ops += ops
         self.messages += res.messages
         self.changed |= res.changed
-        return {"ok": True, "done": res.messages, "changed_ids": sorted(res.changed)}
+        out = {"ok": True, "done": res.messages, "changed_ids": sorted(res.changed)}
+        warnings = [
+            f"{e['tag']} does not follow the tag convention for a {e['type'].replace('_', ' ')}"
+            f" (expected {'/'.join(TYPES[e['type']]['prefixes']) or 'an instrument prefix like LT, PT, LIC'}-xxx)"
+            for e in self.doc["entities"]
+            if e["id"] in res.changed and e.get("tag") and not tag_valid_for_type(e["tag"], e["type"])
+        ]
+        if warnings:
+            out["warnings"] = warnings
+        return out
 
     def call(self, name: str, args: dict) -> dict:
         fn = getattr(self, f"t_{name}", None)
@@ -75,15 +84,19 @@ class Workbench:
         return self._apply([{"op": "delete", "id": target, "cascade": remove_dead_end_pipes}])
 
     def t_add_component(self, type: str, tag: str | None = None, x: float | None = None, y: float | None = None,
-                        near: str | None = None, side: str = "right", distance: float | None = None) -> dict:
-        op = {"op": "add_entity", "type": type, "tag": tag, "side": side}
+                        near: str | None = None, side: str = "right", distance: float | None = None,
+                        connect_to: str | None = None, connect_kind: str = "process") -> dict:
+        op = {"op": "add_entity", "ref": "new", "type": type, "tag": tag, "side": side}
         if x is not None and y is not None:
             op.update(x=x, y=y)
         if near:
             op["near"] = near
         if distance is not None:
             op["distance"] = distance
-        return self._apply([op])
+        ops = [op]
+        if connect_to:
+            ops.append({"op": "connect", "from": connect_to, "to": "$new", "kind": connect_kind})
+        return self._apply(ops)
 
     def t_connect(self, from_component: str, to_component: str, kind: str = "process",
                   line_number: str | None = None) -> dict:
@@ -145,12 +158,11 @@ def describe_drawing(doc: dict, findings: list[dict] | None = None) -> str:
         near = sorted(name(n) for n in topo.neighbours(e["id"]))
         out.append(f"{e['id']} | {e['type']} | {e.get('tag') or '-'} | ({e['x']:.1f}, {e['y']:.1f}) | "
                    f"{e.get('rot', 0):.0f}° | {', '.join(near) or 'nothing'}")
-    out += ["", "PIPES (id | kind | line number | from -> to [in flow order] | points):"]
+    out += ["", "PIPES (id | kind | line number | route in flow order):"]
     for ln in doc["lines"]:
         chain = topo.chain.get(ln["id"], [])
         route = " -> ".join(name(n) for n in chain) if chain else "?"
-        pts = " ".join(f"({p[0]:.0f},{p[1]:.0f})" for p in ln["pts"])
-        out.append(f"{ln['id']} | {ln.get('kind', 'process')} | {ln.get('tag') or '-'} | {route} | {pts}")
+        out.append(f"{ln['id']} | {ln.get('kind', 'process')} | {ln.get('tag') or '-'} | {route}")
     tb = doc.get("title_block")
     out += ["", "TITLE BLOCK: " + (", ".join(f"{k}={v.get('value') or '(blank)'}" for k, v in tb["fields"].items())
                                    if tb else "none")]
@@ -169,46 +181,41 @@ def _fn(name: str, description: str, properties: dict, required: list[str]) -> d
         "type": "object", "properties": properties, "required": required}}}
 
 
-TARGET = {"type": "string", "description": "Component id (e.g. E7) or its tag if unique (e.g. P-102)."}
-LINE = {"type": "string", "description": "Pipe id (e.g. L12) or its line number."}
+TARGET = {"type": "string", "description": "Component id (E7) or unique tag (P-102)."}
+LINE = {"type": "string", "description": "Pipe id (L12) or line number."}
+OBJ = {"type": "string", "description": "Component or pipe id/tag."}
 
 TOOLS = [
-    _fn("get_drawing", "Get the current drawing: components, pipes, title block and findings.", {}, []),
-    _fn("run_checks", "Run the deterministic rule engine on the current drawing and list findings.", {}, []),
-    _fn("move_component", "Move a component to absolute x,y or by dx,dy. Attached pipe ends follow.",
+    _fn("run_checks", "Run the rule engine; returns current findings.", {}, []),
+    _fn("move_component", "Move to absolute x,y or by dx,dy; attached pipes follow.",
         {"target": TARGET, "x": {"type": "number"}, "y": {"type": "number"}, "dx": {"type": "number"},
          "dy": {"type": "number"}}, ["target"]),
-    _fn("rotate_component", "Set a component's rotation in degrees (counter-clockwise).",
+    _fn("rotate_component", "Set rotation in degrees (counter-clockwise).",
         {"target": TARGET, "angle": {"type": "number"}}, ["target", "angle"]),
-    _fn("set_tag", "Set or change the tag of a component (e.g. P-102) or the line number of a pipe.",
-        {"target": {"type": "string", "description": "Component or pipe id/tag."}, "tag": {"type": "string"}},
+    _fn("set_tag", "Set a component tag or a pipe line number.", {"target": OBJ, "tag": {"type": "string"}},
         ["target", "tag"]),
-    _fn("delete", "Delete a component or pipe. Deleting an inline valve rejoins the pipe.",
-        {"target": {"type": "string", "description": "Component or pipe id/tag."},
-         "remove_dead_end_pipes": {"type": "boolean", "description": "Also remove pipe stubs left leading nowhere."}},
-        ["target"]),
-    _fn("add_component", "Add a new symbol. Prefer placing it with `near` + `side`; the tool finds a clear spot.",
-        {"type": {"type": "string", "enum": COMPONENT_TYPES}, "tag": {"type": "string", "description": "ISA tag, e.g. LT-101."},
-         "near": TARGET, "side": {"type": "string", "enum": ["right", "left", "above", "below"]},
-         "distance": {"type": "number", "description": "Gap from the `near` component, drawing units."},
-         "x": {"type": "number"}, "y": {"type": "number"}}, ["type"]),
-    _fn("connect", "Draw an orthogonal pipe (process) or instrument signal line between two components.",
+    _fn("delete", "Delete a component or pipe; removing an inline valve rejoins the pipe.", {"target": OBJ}, ["target"]),
+    _fn("add_component", "Add a symbol near another one (a clear spot is found automatically). Optionally connect "
+        "it straight away with connect_to + connect_kind.",
+        {"type": {"type": "string", "enum": COMPONENT_TYPES}, "tag": {"type": "string"}, "near": TARGET,
+         "side": {"type": "string", "enum": ["right", "left", "above", "below"]}, "x": {"type": "number"},
+         "y": {"type": "number"}, "connect_to": TARGET,
+         "connect_kind": {"type": "string", "enum": ["process", "signal"]}}, ["type"]),
+    _fn("connect", "Draw a pipe (process) or instrument signal line between two components.",
         {"from_component": TARGET, "to_component": TARGET, "kind": {"type": "string", "enum": ["process", "signal"]},
          "line_number": {"type": "string"}}, ["from_component", "to_component"]),
-    _fn("insert_inline", "Insert a valve or inline instrument into an existing pipe, splitting it. Use `after` "
-        "(downstream of) or `before` (upstream of) a component, optionally with `line` to pick which pipe.",
+    _fn("insert_inline", "Insert a valve/inline instrument into a pipe after (downstream of) or before a component.",
         {"type": {"type": "string", "enum": INLINE_TYPES}, "tag": {"type": "string"}, "after": TARGET,
          "before": TARGET, "line": LINE}, ["type"]),
-    _fn("extend_pipe", "Extend the start or end of a pipe to meet a component (closes a gap).",
+    _fn("extend_pipe", "Extend a pipe end to meet a component.",
         {"line": LINE, "end": {"type": "string", "enum": ["start", "end"]}, "to_component": TARGET},
         ["line", "end", "to_component"]),
-    _fn("set_line_number", "Give a pipe a line number; omit number to use the next in the drawing's series.",
+    _fn("set_line_number", "Number a pipe run (omit number for the next in series).",
         {"line": LINE, "number": {"type": "string"}}, ["line"]),
-    _fn("set_title_block", "Fill in a title block field.",
+    _fn("set_title_block", "Fill a title block field.",
         {"field": {"type": "string", "enum": TITLE_FIELDS}, "value": {"type": "string"}}, ["field", "value"]),
-    _fn("apply_fix", "Apply the automatic fix of one finding (use the key from run_checks).",
-        {"issue_key": {"type": "string"}}, ["issue_key"]),
-    _fn("apply_all_fixes", "Apply every available automatic fix, re-checking between fixes.", {}, []),
+    _fn("apply_fix", "Apply one finding's automatic fix by its key.", {"issue_key": {"type": "string"}}, ["issue_key"]),
+    _fn("apply_all_fixes", "Apply every automatic fix.", {}, []),
 ]
 
 

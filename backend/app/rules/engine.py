@@ -358,8 +358,9 @@ def vessel_psv(ctx: Ctx):
 # Instrumentation
 # ---------------------------------------------------------------------------------------------------
 
-@rule("R011", "Control valve without control loop", "Instrumentation", "MEDIUM",
-      "A control valve (FV/LV/PV/TV) needs a measuring instrument or controller with the same loop number.")
+@rule("R011", "Control valve without working control loop", "Instrumentation", "MEDIUM",
+      "A control valve (FV/LV/PV/TV) needs a transmitter/controller with the same loop number, and a signal line "
+      "from the loop to the valve.")
 def control_loop(ctx: Ctx):
     for e in ctx.ents:
         if e["type"] != "control_valve":
@@ -370,28 +371,64 @@ def control_loop(ctx: Ctx):
         letter, number = parsed[0][0], parsed[1]
         loop = [o for o in ctx.ents if category(o["type"]) == "instrument" and (p := parse_tag(o.get("tag")))
                 and p[0][0] == letter and p[1] == number]
-        if loop:
+        if not loop:
+            ctx.add(
+                f"{e['tag']} has no matching loop instrument",
+                f"No {letter}T-{number} transmitter or {letter}IC-{number} controller exists, so nothing drives {e['tag']}.",
+                f"Add the loop instruments ({letter}T-{number}, {letter}IC-{number}) or correct the valve tag.",
+                entities=[e["id"]],
+            )
             continue
+        if not ctx.connectivity or any(o["id"] in ctx.topo.neighbours(e["id"]) for o in loop):
+            continue
+        driver = next((o for o in loop if o["type"] == "instrument_panel"), loop[0])
         ctx.add(
-            f"{e['tag']} has no matching loop instrument",
-            f"No {letter}T-{number} transmitter or {letter}IC-{number} controller exists, so nothing drives {e['tag']}.",
-            f"Add the loop instruments ({letter}T-{number}, {letter}IC-{number}) or correct the valve tag.",
-            entities=[e["id"]],
+            f"{e['tag']} is not wired to its control loop",
+            f"{', '.join(o['tag'] for o in loop)} exist, but no signal line reaches {e['tag']}, so the loop is open.",
+            f"Draw the signal line from {driver['tag']} to {e['tag']}.",
+            entities=[e["id"], driver["id"]], extra="wiring",
+            fix={"label": f"Wire {driver['tag']} → {e['tag']}",
+                 "ops": [{"op": "connect", "from": driver["id"], "to": e["id"], "kind": "signal"}]},
         )
 
 
 @rule("R012", "Instrument not connected", "Instrumentation", "LOW",
-      "Instruments must connect to the process (impulse/nozzle line) or to their loop (signal line).",
+      "Field instruments need a process connection (nozzle / impulse line); panel instruments need a signal line.",
       needs_topology=True)
 def instrument_connected(ctx: Ctx):
+    reach = 25 * ctx.topo.tol
     for e in ctx.ents:
-        if category(e["type"]) != "instrument" or ctx.topo.is_connected(e["id"]) or e["id"] in ctx.topo.inline:
+        if category(e["type"]) != "instrument" or e["id"] in ctx.topo.inline:
             continue
+        connected = ctx.topo.is_connected(e["id"])
+        if e["type"] == "instrument_panel" or ctx.topo.lines_of(e["id"], "process"):
+            if connected:
+                continue
+        fix = None
+        if e["type"] == "instrument":
+            box = ctx.boxes[e["id"]]
+            best, best_d = None, None
+            for o in ctx.ents:
+                if category(o["type"]) != "equipment":
+                    continue
+                ob = ctx.boxes[o["id"]]
+                dx = max(ob[0] - box[2], 0, box[0] - ob[2])
+                dy = max(ob[1] - box[3], 0, box[1] - ob[3])
+                d = (dx * dx + dy * dy) ** 0.5
+                if d <= reach and (best_d is None or d < best_d):
+                    best, best_d = o, d
+            if best:
+                fix = {"label": f"Connect to {describe(best)} (process nozzle)",
+                       "ops": [{"op": "connect", "from": best["id"], "to": e["id"], "kind": "process"}]}
+        what = "is not connected" if not connected else "has no process connection"
         ctx.add(
-            f"{describe(e)} is not connected",
-            f"{describe(e)} has no process or signal line attached.",
-            "Draw its process connection and/or signal line to the controller.",
-            entities=[e["id"]],
+            f"{describe(e)} {what}",
+            f"{describe(e)} has no {'process or signal line' if not connected else 'process (nozzle / impulse) line'} "
+            "attached, so it cannot measure anything." if e["type"] == "instrument" else
+            f"{describe(e)} has no signal line attached.",
+            "Draw its process connection to the equipment or pipe it measures." if e["type"] == "instrument" else
+            "Draw the signal lines to its transmitter and final element.",
+            entities=[e["id"]], fix=fix,
         )
 
 

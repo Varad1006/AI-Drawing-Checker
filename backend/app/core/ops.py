@@ -23,7 +23,7 @@ from .document import (
 )
 from .symbols import (
     BUILTIN_BLOCKS, TITLE_FIELD_POS, TITLE_FIELDS, TYPES, category, default_label, default_prefix, needs_tag,
-    next_free_tag, parse_tag, next_line_tag,
+    next_free_tag, parse_tag, next_line_tag, prefix_type,
 )
 
 EPS = 1e-6
@@ -270,6 +270,9 @@ def op_add_entity(res: EditResult, op: dict) -> str:
     type_ = op.get("type")
     if type_ not in TYPES:
         raise OpError(f"unknown component type '{type_}'. Valid: {', '.join(TYPES)}")
+    parsed = parse_tag((op.get("tag") or "").strip().upper())
+    if parsed and category(type_) == "instrument" and prefix_type(parsed[0]) in ("instrument", "instrument_panel"):
+        type_ = prefix_type(parsed[0])  # LIC-102 is a panel controller, LT-102 a field instrument
     sc = symbol_scale(doc)
     block = _ensure_block(doc, type_)
     near = resolve(doc, op["near"], res.refs, "E") if op.get("near") else None

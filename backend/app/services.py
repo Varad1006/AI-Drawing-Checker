@@ -112,10 +112,10 @@ def current_issues(db: Session, drawing: Drawing, rev: Revision | None = None) -
     live = [dict(f) for f in rules_for(rev)] + _ai_findings(drawing, doc, runs[-1] if runs else None)
     live_keys = {f["key"] for f in live}
 
+    # "fixed" means the deterministic rules confirm the problem is gone. AI findings are opinions: they leave the
+    # register when their objects are deleted or a re-run no longer raises them, but are never counted as fixed.
     first = next((r for r in drawing.revisions if r.rev_no == 1), None)
     baseline = [dict(f) for f in rules_for(first)] if first else []
-    if runs:
-        baseline += [dict(f) for f in runs[0].findings]
     reviews = {r.key: r for r in drawing.reviews}
 
     issues = []

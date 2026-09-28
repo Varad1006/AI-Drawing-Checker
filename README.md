@@ -49,6 +49,10 @@ GROQ_API_KEY=gsk_...
 GROQ_MODEL=openai/gpt-oss-120b     # any Groq model with tool calling
 ```
 
+Groq's free tier allows about 8,000 tokens per minute and each assistant step sends roughly 3,000, so a multi-step
+edit can pause briefly for the rate limit (typically 20–60 s end to end). The assistant batches edits into as few
+steps as possible, and if it is cut off it keeps the edits it already made.
+
 Without a key everything except the AI review still works: the rule engine, auto-fix, exports, and the assistant,
 which falls back to an offline command parser (`fix all`, `rename E7 to P-102`,
 `add a check valve after P-102`, `add a level transmitter near TK-101 right`, `set checked by to J. SMITH`, `help`).
@@ -77,8 +81,8 @@ which falls back to an offline command parser (`fix all`, `rename E7 to P-102`,
 | R008 | Pump suction/discharge without isolation valve | MEDIUM | ✓ |
 | R009 | Tank / vessel without level instrument | HIGH | |
 | R010 | Pressure vessel without PSV | CRITICAL | |
-| R011 | Control valve without matching loop instrument | MEDIUM | |
-| R012 | Instrument not connected | LOW | ✓ |
+| R011 | Control valve without loop instruments, or not wired to them | MEDIUM | |
+| R012 | Instrument without process connection / signal line | LOW | ✓ |
 | R013 | Pipe run without line number | LOW | ✓ |
 | R014 | Title block incomplete | LOW | |
 | R015 | Overlapping symbols | LOW | |
